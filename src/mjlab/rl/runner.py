@@ -8,6 +8,21 @@ from rsl_rl.runners import OnPolicyRunner
 from mjlab.rl.vecenv_wrapper import RslRlVecEnvWrapper
 
 
+def merge_episode_extras(ep_extras: list[dict]) -> list[dict]:
+  """Concatenate each key's values over the collected steps into one entry.
+
+  The logger averages a key over the concatenation of all its values, so the merged list logs
+  the same numbers with one tensor per key.
+  """
+  merged: dict[str, list[torch.Tensor]] = {}
+  for ep_info in ep_extras:
+    for key, value in ep_info.items():
+      if not isinstance(value, torch.Tensor):
+        value = torch.Tensor([value])
+      merged.setdefault(key, []).append(value.reshape(-1))
+  return [{key: torch.cat(values) for key, values in merged.items()}] if merged else []
+
+
 class MjlabOnPolicyRunner(OnPolicyRunner):
   """Base runner that persists environment state across checkpoints."""
 
@@ -30,6 +45,16 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
           for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
             train_cfg[key].pop(opt, None)
     super().__init__(env, train_cfg, log_dir, device)
+    if torch.device(self.device) != torch.device(self.env.device):
+      # The logger moves every logged episode value to the agent's device, one per key per env
+      # step. Across devices each move is a synchronizing copy, so merge them on the env device.
+      log = self.logger.log
+
+      def log_merged(*args, **kwargs):
+        self.logger.ep_extras[:] = merge_episode_extras(self.logger.ep_extras)
+        return log(*args, **kwargs)
+
+      self.logger.log = log_merged
 
   def export_policy_to_onnx(
     self, path: str, filename: str = "policy.onnx", verbose: bool = False

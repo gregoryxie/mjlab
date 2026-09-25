@@ -659,3 +659,59 @@ def test_tracking_runner_does_not_register_artifact_for_tensorboard(
     runner.save(str(checkpoint))
 
   mock_wandb.run.use_artifact.assert_not_called()
+
+
+def test_merged_episode_extras_log_the_same_values():
+  """merge_episode_extras() leaves every value rsl-rl's logger writes bit-identical."""
+  from mjlab.rl.runner import merge_episode_extras
+
+  generator = torch.Generator().manual_seed(0)
+  ep_extras = []
+  for step in range(24):
+    ep_info = {
+      "Episode_Reward/track": torch.rand(7, generator=generator),
+      "Episode_Termination/fell": torch.tensor(float(step % 3)),  # zero-dimensional
+      "Metrics/count": torch.randint(0, 5, (3,), generator=generator),  # integer
+    }
+    if step % 4 == 0:
+      ep_info["Curriculum/level"] = 0.5 * step  # plain float, missing on most steps
+    ep_extras.append(ep_info)
+
+  def logged(extras):
+    logger = Logger(
+      log_dir=None,
+      cfg={"algorithm": {}, "num_steps_per_env": 24},
+      env_cfg={},
+      num_envs=1,
+      is_distributed=False,
+      gpu_world_size=1,
+      gpu_global_rank=0,
+      device="cpu",
+    )
+    logger.writer = MagicMock()
+    logger.ep_extras = extras
+    logger.log(
+      it=0,
+      start_it=0,
+      total_it=1,
+      collect_time=1.0,
+      learn_time=1.0,
+      loss_dict={},
+      learning_rate=1e-3,
+      action_std=torch.ones(1),
+      rnd_weight=None,
+    )
+    return {
+      c.args[0]: float(c.args[1])
+      for c in logger.writer.add_scalar.call_args_list
+      if c.args[0].startswith(("Episode", "Metrics", "Curriculum"))
+    }
+
+  merged = merge_episode_extras([dict(e) for e in ep_extras])
+  assert len(merged) == 1
+  expected = logged([dict(e) for e in ep_extras])
+  assert len(expected) == 4
+  assert (
+    logged(merged) == expected
+  )  # exact: the same values are averaged in the same order
+  assert merge_episode_extras([]) == []
