@@ -675,6 +675,10 @@ def test_merged_episode_extras_log_the_same_values():
     }
     if step % 4 == 0:
       ep_info["Curriculum/level"] = 0.5 * step  # plain float, missing on most steps
+    if step >= 5:
+      ep_info["Metrics/late"] = torch.rand(
+        2, generator=generator
+      )  # first appears at step 5
     ep_extras.append(ep_info)
 
   def logged(extras):
@@ -710,7 +714,7 @@ def test_merged_episode_extras_log_the_same_values():
   merged = merge_episode_extras([dict(e) for e in ep_extras])
   assert len(merged) == 1
   expected = logged([dict(e) for e in ep_extras])
-  assert len(expected) == 4
+  assert len(expected) == 5
   assert (
     logged(merged) == expected
   )  # exact: the same values are averaged in the same order
