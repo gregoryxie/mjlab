@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import gc
 import warnings
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ import warp as wp
 
 from mjlab.entity.variants import VARIANT_DEPENDENT_FIELDS, build_variant_model
 from mjlab.managers.event_manager import RecomputeLevel
+from mjlab.sim.cpu_sim import CpuSim, CpuSimCfg, lightweight_model
 from mjlab.sim.randomization import expand_model_fields
 from mjlab.sim.sim_data import TorchArray, WarpBridge
 from mjlab.utils.device import sim_device, synchronize
@@ -199,6 +201,10 @@ class SimulationCfg:
   the last physics step, and in environments reset since that step, the values
   from before the reset. The skipped constraint solve is most of a forward's
   cost. Models with sleeping enabled need ``"full"``."""
+  cpu_sim: CpuSimCfg | None = None
+  """Step the last ``cpu_sim.num_envs`` environments with MuJoCo (C) on CPU
+  threads while MJWarp steps the rest on the GPU. None (the default) keeps every
+  environment on the GPU. See ``mjlab.sim.cpu_sim``."""
   mujoco: MujocoCfg = field(default_factory=MujocoCfg)
   nan_guard: NanGuardCfg = field(default_factory=NanGuardCfg)
 
@@ -271,6 +277,9 @@ class Simulation:
     # Per-entity variant assignment, keyed by entity name (no trailing
     # slash). Empty for non-variant scenes.
     self._world_to_variant: dict[str, torch.Tensor] = {}
+    self._spec = spec
+    if cfg.cpu_sim is not None and variant_info:
+      raise ValueError("CPU simulation does not support per-world variants")
 
     if spec is not None and variant_info:
       self._init_with_variants(spec, variant_info)
@@ -379,6 +388,11 @@ class Simulation:
       njmax=self.cfg.njmax,
     )
 
+    self._step_data: mjwarp.Data | None = self._wp_data
+    self._cpu_sim: CpuSim | None = None
+    if self.cfg.cpu_sim is not None:
+      self._init_cpu_sim(self.cfg.cpu_sim)
+
     self._reset_mask_wp = wp.zeros(self.num_envs, dtype=bool)
     self._reset_mask = TorchArray(self._reset_mask_wp)
 
@@ -411,9 +425,10 @@ class Simulation:
     self.sense_graph = None
     if self.use_cuda_graph:
       with _suspend_gc(), wp.ScopedDevice(self.wp_device):
-        with wp.ScopedCapture() as capture:
-          mjwarp.step(self.wp_model, self.wp_data)
-        self.step_graph = capture.graph
+        if self._step_data is not None:
+          with wp.ScopedCapture() as capture:
+            mjwarp.step(self.wp_model, self._step_data)
+          self.step_graph = capture.graph
         with wp.ScopedCapture() as capture:
           self._forward_kernel()
         self.forward_graph = capture.graph
@@ -541,10 +556,14 @@ class Simulation:
   def step(self) -> None:
     with wp.ScopedDevice(self.wp_device):
       with self.nan_guard.watch(self.data):
-        if self.use_cuda_graph and self.step_graph is not None:
-          wp.capture_launch(self.step_graph)
-        else:
-          mjwarp.step(self.wp_model, self.wp_data)
+        if self._step_data is not None:
+          if self.use_cuda_graph and self.step_graph is not None:
+            wp.capture_launch(self.step_graph)
+          else:
+            mjwarp.step(self.wp_model, self._step_data)
+        if self._cpu_sim is not None:
+          # The GPU steps its rows asynchronously meanwhile; the rows are disjoint.
+          self._cpu_sim.step()
     synchronize(self.wp_device)
 
   def reset(self, env_ids: torch.Tensor | None = None) -> None:
@@ -593,6 +612,45 @@ class Simulation:
     ctx.finalize()
 
   # Private methods.
+
+  def _init_cpu_sim(self, cfg: CpuSimCfg) -> None:
+    """Hands the last cfg.num_envs rows to MuJoCo (C); the GPU steps the rest."""
+    if not 0 < cfg.num_envs <= self.num_envs:
+      raise ValueError(f"cpu_sim.num_envs must be in [1, {self.num_envs}]")
+    if self._mj_model.opt.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP):
+      raise ValueError("CPU simulation does not support sleeping")
+    num_gpu = self.num_envs - cfg.num_envs
+    self._step_data = self._gpu_rows(num_gpu) if num_gpu else None
+    if self._spec is not None:
+      model = lightweight_model(self._spec, self.cfg.mujoco.apply)
+    else:
+      model = self._mj_model
+    self._cpu_sim = CpuSim(
+      cfg, model, self._wp_model, self._wp_data, self._expanded_fields
+    )
+
+  def _gpu_rows(self, num: int) -> mjwarp.Data:
+    """A Data stepping worlds [0, num) of the batch in place.
+
+    Its per-world arrays are views of the batch's first ``num`` rows; the contact
+    and constraint pools, rebuilt every step, are its own.
+    """
+    rows = mjwarp.put_data(
+      self._mj_model,
+      self._mj_data,
+      nworld=num,
+      nconmax=self.cfg.nconmax,
+      njmax=self.cfg.njmax,
+    )
+    for f in dataclasses.fields(mjwarp.Data):
+      spec = f.type
+      if not (isinstance(spec, wp.array) and spec.shape and spec.shape[0] == "nworld"):
+        continue
+      batch = getattr(self._wp_data, f.name)
+      if batch.size == 0:  # a field this model does not use
+        continue
+      setattr(rows, f.name, batch[0:num])
+    return rows
 
   def _forward_kernel(self) -> None:
     """GPU kernel sequence for forward() (captured in forward_graph)."""

@@ -11,6 +11,10 @@ Added
 - ``SimulationCfg.graph_conditional`` sets whether the constraint solver's iteration
   loop runs as a graph conditional. The default keeps the per-device behavior: on for
   CUDA, off for Metal, where the loop condition is evaluated on the host.
+- ``SimulationCfg.cpu_sim`` steps the last ``cpu_sim.num_envs`` environments with
+  MuJoCo (C) on CPU threads while MJWarp steps the rest on the GPU, so the CPU adds
+  simulation throughput. Both halves share the MJWarp arrays, so resets, pushes,
+  actions and domain randomization reach every environment. Off by default.
 - ``SimulationCfg.forward_mode="position_velocity"`` makes ``Simulation.forward()``
   stop after the velocity stage, skipping the constraint solve that is most of its
   cost. Acceleration-stage sensors (contact, touch, force, torque, accelerometer) keep
