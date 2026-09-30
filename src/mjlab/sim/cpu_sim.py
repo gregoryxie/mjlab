@@ -13,6 +13,7 @@ follow the physics substeps run on the GPU for every row.
 from __future__ import annotations
 
 import copy
+import os
 from dataclasses import dataclass
 
 import mujoco
@@ -25,12 +26,18 @@ import warp as wp
 
 @dataclass
 class CpuSimCfg:
-  num_envs: int
+  num_envs: int = 0
   """How many environments, taken from the end of the batch, MuJoCo (C) steps on
-  the CPU. The rest stay on the GPU; all of them may go to the CPU."""
-  threads: int = 8
-  """CPU threads stepping them. Keep below the core count, so torch, Python and the
-  GPU driver keep cores of their own."""
+  the CPU. The rest stay on the GPU; all of them may go to the CPU. 0 keeps every
+  environment on the GPU."""
+  threads: int | None = None
+  """CPU threads stepping them. None uses all cores but four, which stay free for
+  torch, Python and the GPU driver."""
+
+  def resolved_threads(self) -> int:
+    if self.threads is not None:
+      return self.threads
+    return max(1, (os.cpu_count() or 1) - 4)
 
 
 # MuJoCo state components, in the order mj_getState lays them out.
@@ -98,8 +105,9 @@ class CpuSim:
       raise ValueError("CPU simulation does not support plugin state")
 
     self.models = [copy.copy(model) for _ in range(self.num_envs)]
-    self._datas = [mujoco.MjData(model) for _ in range(cfg.threads)]
-    self._pool = mujoco.rollout.Rollout(nthread=cfg.threads)
+    threads = cfg.resolved_threads()
+    self._datas = [mujoco.MjData(model) for _ in range(threads)]
+    self._pool = mujoco.rollout.Rollout(nthread=threads)
 
     rows = slice(self.start, wp_data.nworld)
     self._state_spec, self._state_parts = self._layout(

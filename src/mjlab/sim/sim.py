@@ -201,10 +201,10 @@ class SimulationCfg:
   the last physics step, and in environments reset since that step, the values
   from before the reset. The skipped constraint solve is most of a forward's
   cost. Models with sleeping enabled need ``"full"``."""
-  cpu_sim: CpuSimCfg | None = None
+  cpu_sim: CpuSimCfg = field(default_factory=CpuSimCfg)
   """Step the last ``cpu_sim.num_envs`` environments with MuJoCo (C) on CPU
-  threads while MJWarp steps the rest on the GPU. None (the default) keeps every
-  environment on the GPU. See ``mjlab.sim.cpu_sim``."""
+  threads while MJWarp steps the rest on the GPU; by default none. See
+  ``mjlab.sim.cpu_sim``."""
   mujoco: MujocoCfg = field(default_factory=MujocoCfg)
   nan_guard: NanGuardCfg = field(default_factory=NanGuardCfg)
 
@@ -278,7 +278,7 @@ class Simulation:
     # slash). Empty for non-variant scenes.
     self._world_to_variant: dict[str, torch.Tensor] = {}
     self._spec = spec
-    if cfg.cpu_sim is not None and variant_info:
+    if cfg.cpu_sim.num_envs and variant_info:
       raise ValueError("CPU simulation does not support per-world variants")
 
     if spec is not None and variant_info:
@@ -390,7 +390,9 @@ class Simulation:
 
     self._step_data: mjwarp.Data | None = self._wp_data
     self._cpu_sim: CpuSim | None = None
-    if self.cfg.cpu_sim is not None:
+    if not 0 <= self.cfg.cpu_sim.num_envs <= self.num_envs:
+      raise ValueError(f"cpu_sim.num_envs must be in [0, {self.num_envs}]")
+    if self.cfg.cpu_sim.num_envs:
       self._init_cpu_sim(self.cfg.cpu_sim)
 
     self._reset_mask_wp = wp.zeros(self.num_envs, dtype=bool)
@@ -615,8 +617,6 @@ class Simulation:
 
   def _init_cpu_sim(self, cfg: CpuSimCfg) -> None:
     """Hands the last cfg.num_envs rows to MuJoCo (C); the GPU steps the rest."""
-    if not 0 < cfg.num_envs <= self.num_envs:
-      raise ValueError(f"cpu_sim.num_envs must be in [1, {self.num_envs}]")
     if self._mj_model.opt.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP):
       raise ValueError("CPU simulation does not support sleeping")
     num_gpu = self.num_envs - cfg.num_envs

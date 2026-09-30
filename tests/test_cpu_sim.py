@@ -128,7 +128,13 @@ def test_all_envs_on_cpu(device):
   assert sim.data.qpos[:, 2].max() < 0.3  # fell toward the floor
 
 
-@pytest.mark.parametrize("num_cpu", [0, 3])
+def test_off_by_default(device):
+  model = mujoco.MjModel.from_xml_string(_XML)
+  sim = Simulation(num_envs=2, cfg=SimulationCfg(), model=model, device=device)
+  assert sim._cpu_sim is None and sim._step_data is sim.wp_data
+
+
+@pytest.mark.parametrize("num_cpu", [-1, 3])
 def test_rejects_invalid_num_envs(device, num_cpu):
   with pytest.raises(ValueError, match="cpu_sim.num_envs"):
     _sim(device, num_envs=2, num_cpu=num_cpu)
