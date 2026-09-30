@@ -486,6 +486,7 @@ class Simulation:
     fn = getattr(mjwarp, level.name)
     with wp.ScopedDevice(self.wp_device):
       fn(self._wp_model, self._wp_data)
+    synchronize(self.wp_device)
 
   def forward(self) -> None:
     with wp.ScopedDevice(self.wp_device):
