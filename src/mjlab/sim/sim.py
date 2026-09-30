@@ -95,6 +95,15 @@ _ENABLE_FLAG_MAP: dict[str, int] = {
 }
 
 
+@wp.kernel
+def _zero_sensor_slots(
+  slots: wp.array(dtype=int),  # type: ignore[valid-type]
+  sensordata: wp.array2d(dtype=float),  # type: ignore[valid-type]
+):
+  worldid, i = wp.tid()  # type: ignore[attr-defined]
+  sensordata[worldid, slots[i]] = 0.0
+
+
 @dataclass
 class MujocoCfg:
   """Configuration for MuJoCo simulation parameters."""
@@ -181,6 +190,15 @@ class SimulationCfg:
   for CUDA, off for Metal, where warp-metal evaluates the loop condition on the
   host, making each solver iteration a CPU-GPU round trip, and a large batch of
   diverse worlds seldom converges early enough to repay it."""
+  forward_mode: Literal["full", "position_velocity"] = "full"
+  """What ``Simulation.forward()`` computes. ``"full"`` is MuJoCo's forward
+  dynamics. ``"position_velocity"`` stops after the velocity stage: kinematics,
+  collision, velocities, and position- and velocity-stage sensors are
+  recomputed, while accelerations, constraint forces, and acceleration-stage
+  sensors (contact, touch, force, torque, accelerometer) keep the values from
+  the last physics step, and in environments reset since that step, the values
+  from before the reset. The skipped constraint solve is most of a forward's
+  cost. Models with sleeping enabled need ``"full"``."""
   mujoco: MujocoCfg = field(default_factory=MujocoCfg)
   nan_guard: NanGuardCfg = field(default_factory=NanGuardCfg)
 
@@ -336,6 +354,23 @@ class Simulation:
     if graph_conditional is None:
       graph_conditional = not getattr(self.wp_device, "is_metal", False)
     self._wp_model.opt.graph_conditional = graph_conditional
+    if self.cfg.forward_mode == "position_velocity":
+      if self._mj_model.opt.enableflags & int(mujoco.mjtEnableBit.mjENBL_SLEEP):
+        raise ValueError('forward_mode="position_velocity" does not support sleeping')
+      # Sensordata slots the position and velocity stages write.
+      slots = [
+        adr + k
+        for adr, dim, stage in zip(
+          self._mj_model.sensor_adr,
+          self._mj_model.sensor_dim,
+          self._mj_model.sensor_needstage,
+          strict=True,
+        )
+        if int(stage)
+        in (int(mujoco.mjtStage.mjSTAGE_POS), int(mujoco.mjtStage.mjSTAGE_VEL))
+        for k in range(dim)
+      ]
+      self._posvel_sensor_slots = wp.array(slots, dtype=int, device=self.wp_device)
     self._wp_data = mjwarp.put_data(
       self._mj_model,
       self._mj_data,
@@ -380,7 +415,7 @@ class Simulation:
           mjwarp.step(self.wp_model, self.wp_data)
         self.step_graph = capture.graph
         with wp.ScopedCapture() as capture:
-          mjwarp.forward(self.wp_model, self.wp_data)
+          self._forward_kernel()
         self.forward_graph = capture.graph
         with wp.ScopedCapture() as capture:
           mjwarp.reset_data(self.wp_model, self.wp_data, reset=self._reset_mask_wp)
@@ -500,7 +535,7 @@ class Simulation:
       if self.use_cuda_graph and self.forward_graph is not None:
         wp.capture_launch(self.forward_graph)
       else:
-        mjwarp.forward(self.wp_model, self.wp_data)
+        self._forward_kernel()
     synchronize(self.wp_device)
 
   def step(self) -> None:
@@ -559,6 +594,34 @@ class Simulation:
 
   # Private methods.
 
+  def _forward_kernel(self) -> None:
+    """GPU kernel sequence for forward() (captured in forward_graph)."""
+    m, d = self.wp_model, self.wp_data
+    if self.cfg.forward_mode == "full":
+      mjwarp.forward(m, d)
+      return
+    # mjwarp.forward through its velocity stage, except that only the position-
+    # and velocity-stage sensor slots are cleared, so the acceleration-stage ones
+    # keep the last physics step's values instead of reading zero.
+    energy = m.opt.enableflags & mjwarp.EnableBit.ENERGY
+    mjwarp.fwd_position(m, d, factorize=False)
+    if self._posvel_sensor_slots.shape[0]:
+      wp.launch(
+        _zero_sensor_slots,
+        dim=(d.nworld, self._posvel_sensor_slots.shape[0]),
+        inputs=[self._posvel_sensor_slots, d.sensordata],
+      )
+    mjwarp.sensor_pos(m, d)
+    if energy:
+      if m.sensor_e_potential == 0:
+        mjwarp.energy_pos(m, d)
+    else:
+      d.energy.zero_()
+    mjwarp.fwd_velocity(m, d)
+    mjwarp.sensor_vel(m, d)
+    if energy and m.sensor_e_kinetic == 0:
+      mjwarp.energy_vel(m, d)
+
   def _sense_kernel(self) -> None:
     """GPU kernel sequence for sensing (captured in sense_graph)."""
     assert self._sensor_context is not None
@@ -577,7 +640,9 @@ class Simulation:
   def _should_use_cuda_graph(self) -> bool:
     """Determine if CUDA graphs can be used based on device and driver version."""
     if getattr(self.wp_device, "is_metal", False):
-      return True  # Metal records and replays dispatches natively (no driver requirements)
+      return (
+        True  # Metal records and replays dispatches natively (no driver requirements)
+      )
     if not self.wp_device.is_cuda:
       return False
 

@@ -206,3 +206,74 @@ def test_xpos_matches_qpos_after_forward(robot_xml, device):
   sim.forward()
   xpos_fresh = sim.data.xpos[:, 1].clone()
   torch.testing.assert_close(xpos_fresh, qpos_pos, atol=1e-5, rtol=0)
+
+
+_SENSOR_STAGES_XML = """
+<mujoco>
+  <worldbody>
+    <geom type="plane" size="5 5 0.1"/>
+    <body name="box" pos="0 0 0.2">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+      <site name="bottom" pos="0 0 -0.1" size="0.1 0.1 0.02" type="box"/>
+      <site name="imu"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framepos objtype="body" objname="box"/>
+    <velocimeter site="imu"/>
+    <accelerometer site="imu"/>
+    <touch site="bottom"/>
+  </sensor>
+</mujoco>
+"""
+
+
+def _slots(model, stage):
+  return [
+    adr + k
+    for adr, dim, need in zip(
+      model.sensor_adr, model.sensor_dim, model.sensor_needstage, strict=True
+    )
+    if int(need) == int(stage)
+    for k in range(dim)
+  ]
+
+
+def test_position_velocity_forward_keeps_acceleration_sensors(device):
+  """Recomputes position/velocity sensors as MuJoCo does; leaves the rest as stepped."""
+  model = mujoco.MjModel.from_xml_string(_SENSOR_STAGES_XML)
+  cfg = SimulationCfg(forward_mode="position_velocity")
+  sim = Simulation(num_envs=2, cfg=cfg, model=model, device=device)
+  for _ in range(100):  # settle onto the plane, so the touch sensor reads the contact
+    sim.step()
+
+  acc_slots = _slots(model, mujoco.mjtStage.mjSTAGE_ACC)
+  after_step = sim.data.sensordata[:, acc_slots].clone()
+  assert (after_step.abs() > 0).any()
+  sim.data.qvel[:, :3] = torch.tensor([0.3, -0.2, 0.1], device=sim.data.qvel.device)
+  sim.forward()
+
+  torch.testing.assert_close(
+    sim.data.sensordata[:, acc_slots], after_step, rtol=0, atol=0
+  )
+  reference = mujoco.MjData(model)
+  reference.qpos[:] = sim.data.qpos[0].cpu().numpy()
+  reference.qvel[:] = sim.data.qvel[0].cpu().numpy()
+  mujoco.mj_forward(model, reference)
+  posvel_slots = _slots(model, mujoco.mjtStage.mjSTAGE_POS) + _slots(
+    model, mujoco.mjtStage.mjSTAGE_VEL
+  )
+  np.testing.assert_allclose(
+    sim.data.sensordata[0, posvel_slots].cpu().numpy(),
+    reference.sensordata[posvel_slots],
+    atol=1e-4,
+  )
+
+
+def test_position_velocity_forward_rejects_sleep(device):
+  model = mujoco.MjModel.from_xml_string(_SENSOR_STAGES_XML)
+  model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+  cfg = SimulationCfg(forward_mode="position_velocity")
+  with pytest.raises(ValueError, match="sleeping"):
+    Simulation(num_envs=1, cfg=cfg, model=model, device=device)

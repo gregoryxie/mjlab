@@ -5,6 +5,17 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Added
+^^^^^
+
+- ``SimulationCfg.graph_conditional`` sets whether the constraint solver's iteration
+  loop runs as a graph conditional. The default keeps the per-device behavior: on for
+  CUDA, off for Metal, where the loop condition is evaluated on the host.
+- ``SimulationCfg.forward_mode="position_velocity"`` makes ``Simulation.forward()``
+  stop after the velocity stage, skipping the constraint solve that is most of its
+  cost. Acceleration-stage sensors (contact, touch, force, torque, accelerometer) keep
+  the values from the last physics step. The default, ``"full"``, is unchanged.
+
 Changed
 ^^^^^^^
 
@@ -15,6 +26,9 @@ Changed
 Fixed
 ^^^^^
 
+- On Metal, ``Simulation.recompute_constants`` and the differential IK action's
+  Jacobian now wait for the GPU before torch reads their results, which read stale
+  constants and a zero Jacobian before.
 - Capped ``wandb`` below 0.29, which removed the ``start_method`` setting still passed
   by ``rsl-rl-lib`` and crashed training runs launched with ``--logger wandb``.
 - ``distribution="gaussian"`` domain randomization now draws an independent value per
