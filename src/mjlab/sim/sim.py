@@ -174,6 +174,13 @@ class SimulationCfg:
   If None, use the MuJoCo Warp default."""
   ls_parallel: bool | None = None
   """Deprecated and ignored. Parallel linesearch was removed in MuJoCo Warp 3.10."""
+  graph_conditional: bool | None = None
+  """Run the constraint solver's iteration loop as a conditional node in the
+  captured graph, so a step stops once every world has converged; when False,
+  every step runs the solver to its iteration cap. None picks per device: on
+  for CUDA, off for Metal, where warp-metal evaluates the loop condition on the
+  host, making each solver iteration a CPU-GPU round trip, and a large batch of
+  diverse worlds seldom converges early enough to repay it."""
   mujoco: MujocoCfg = field(default_factory=MujocoCfg)
   nan_guard: NanGuardCfg = field(default_factory=NanGuardCfg)
 
@@ -232,8 +239,6 @@ class Simulation:
     self.cfg = cfg
     self.device = device
     self.wp_device = wp.get_device(sim_device(self.device))
-    # Metal graphs cannot evaluate loop conditions; run the solver for its fixed iteration count.
-    self._fixed_solver_iterations = getattr(self.wp_device, "is_metal", False)
     self.num_envs = num_envs
     self._default_model_fields: dict[str, torch.Tensor] = {}
     # Fields whose DR baseline is per-world (DR's `_select_default_values`
@@ -327,8 +332,10 @@ class Simulation:
 
   def _finish_init(self) -> None:
     """Common initialization after warp model is created."""
-    if self._fixed_solver_iterations:
-      self._wp_model.opt.graph_conditional = False
+    graph_conditional = self.cfg.graph_conditional
+    if graph_conditional is None:
+      graph_conditional = not getattr(self.wp_device, "is_metal", False)
+    self._wp_model.opt.graph_conditional = graph_conditional
     self._wp_data = mjwarp.put_data(
       self._mj_model,
       self._mj_data,

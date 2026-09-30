@@ -105,6 +105,26 @@ def test_default_broadphase_keeps_put_model_heuristic(robot_xml, device):
   assert sim.wp_model.opt.broadphase_filter == heuristic_opt.broadphase_filter
 
 
+def test_graph_conditional_defaults_per_device(robot_xml, device):
+  """Unset, the solver loop is a graph conditional everywhere except Metal."""
+  model = mujoco.MjModel.from_xml_string(robot_xml)
+
+  sim = Simulation(num_envs=1, cfg=SimulationCfg(), model=model, device=device)
+
+  on_metal = getattr(sim.wp_device, "is_metal", False)
+  assert sim.wp_model.opt.graph_conditional == (not on_metal)
+
+
+@pytest.mark.parametrize("graph_conditional", [True, False])
+def test_graph_conditional_is_piped(robot_xml, device, graph_conditional):
+  model = mujoco.MjModel.from_xml_string(robot_xml)
+  cfg = SimulationCfg(graph_conditional=graph_conditional)
+
+  sim = Simulation(num_envs=1, cfg=cfg, model=model, device=device)
+
+  assert sim.wp_model.opt.graph_conditional == graph_conditional
+
+
 def test_ls_parallel_is_deprecated():
   """Setting the removed ls_parallel option warns instead of erroring."""
   with pytest.warns(DeprecationWarning, match="ls_parallel"):
