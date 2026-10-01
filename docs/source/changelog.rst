@@ -8,6 +8,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``Mjlab-Velocity-Flat-Robust-Unitree-G1``: the flat G1 velocity task with link
+  inertia, PD gain and effort limit randomization and a 0 to 3 step actuator
+  command delay.
 - ``SimulationCfg.graph_conditional`` sets whether the constraint solver's iteration
   loop runs as a graph conditional. The default keeps the per-device behavior: on for
   CUDA, off for Metal, where the loop condition is evaluated on the host.

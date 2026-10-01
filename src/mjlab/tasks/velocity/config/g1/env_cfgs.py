@@ -1,14 +1,18 @@
 """Unitree G1 velocity environment configurations."""
 
+from dataclasses import replace
+
 from mjlab.asset_zoo.robots import (
   G1_ACTION_SCALE,
   get_g1_robot_cfg,
 )
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
+from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.reward_manager import RewardTermCfg
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import (
   ContactMatch,
   ContactSensorCfg,
@@ -216,5 +220,74 @@ def unitree_g1_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     assert isinstance(twist_cmd, UniformVelocityCommandCfg)
     twist_cmd.ranges.lin_vel_x = (-1.5, 2.0)
     twist_cmd.ranges.ang_vel_z = (-0.7, 0.7)
+
+  return cfg
+
+
+def unitree_g1_flat_robust_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """Flat-terrain G1 velocity task with model and actuator randomization.
+
+  On top of the flat task's pushes, observation noise, foot friction, encoder bias
+  and torso COM offset, each environment gets its own:
+
+  - link inertias: every body's mass and inertia scaled together (uniform density
+    change) by 0.86 to 1.16;
+  - PD gains: stiffness and damping each scaled by 0.8 to 1.2, per joint;
+  - actuator strength: effort limits scaled by 0.8 to 1.0, per joint;
+
+  and every actuator's command arrives 0 to 3 physics steps (0 to 15 ms) late.
+  In play mode the randomization and delay stay on, as in the flat task.
+  """
+  cfg = unitree_g1_flat_env_cfg(play=play)
+
+  # Command delay: one lag per environment, resampled on a fifth of the steps.
+  robot = cfg.scene.entities["robot"]
+  assert robot.articulation is not None
+  robot.articulation = replace(
+    robot.articulation,
+    actuators=tuple(
+      replace(a, delay_min_lag=0, delay_max_lag=3, delay_hold_prob=0.8)
+      for a in robot.articulation.actuators
+    ),
+  )
+
+  robust_events = {
+    # mass and inertia scale by exp(2 alpha). Placed before base_com: this term writes
+    # every body's COM from its default, and base_com then offsets the torso's.
+    "link_inertia": EventTermCfg(
+      mode="startup",
+      func=dr.pseudo_inertia,
+      params={
+        "asset_cfg": SceneEntityCfg("robot", body_names=(".*",)),
+        "alpha_range": (-0.075, 0.075),
+      },
+    ),
+    "actuator_gains": EventTermCfg(
+      mode="startup",
+      func=dr.pd_gains,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "kp_range": (0.8, 1.2),
+        "kd_range": (0.8, 1.2),
+        "operation": "scale",
+      },
+    ),
+    "actuator_strength": EventTermCfg(
+      mode="startup",
+      func=dr.effort_limits,
+      params={
+        "asset_cfg": SceneEntityCfg("robot"),
+        "effort_limit_range": (0.8, 1.0),
+        "operation": "scale",
+      },
+    ),
+  }
+  events = {}
+  for name, term in cfg.events.items():
+    if name == "base_com":
+      events.update(robust_events)
+    events[name] = term
+  assert "link_inertia" in events
+  cfg.events = events
 
   return cfg
