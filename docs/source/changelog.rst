@@ -29,6 +29,10 @@ Changed
 - Bumped ``rsl-rl-lib`` from 5.4.2 to 5.5.0. This update removes the ``logger_type``
   attribute of the ``rsl_rl.utils.Logger``, so code that previously checked
   ``logger.logger_type`` must instead check the type of ``logger.writer``.
+- When the agent trains on a different device than the environment (the policy on MPS
+  with the simulation on Metal), logged episode values are merged per key before the
+  logger moves them to the agent's device: one copy per key instead of one per key per
+  environment step. The logged numbers are the same.
 
 Fixed
 ^^^^^
@@ -36,6 +40,8 @@ Fixed
 - On Metal, ``Simulation.recompute_constants`` and the differential IK action's
   Jacobian now wait for the GPU before torch reads their results, which read stale
   constants and a zero Jacobian before.
+- On Metal, the NaN guard checks a physics step after waiting for the GPU. It read the
+  state while the step was still running before.
 - Capped ``wandb`` below 0.29, which removed the ``start_method`` setting still passed
   by ``rsl-rl-lib`` and crashed training runs launched with ``--logger wandb``.
 - ``distribution="gaussian"`` domain randomization now draws an independent value per

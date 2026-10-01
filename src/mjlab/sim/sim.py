@@ -566,7 +566,8 @@ class Simulation:
         if self._cpu_sim is not None:
           # The GPU steps its rows asynchronously meanwhile; the rows are disjoint.
           self._cpu_sim.step()
-    synchronize(self.wp_device)
+        # Inside the watch, so the NaN guard checks the finished step.
+        synchronize(self.wp_device)
 
   def reset(self, env_ids: torch.Tensor | None = None) -> None:
     with wp.ScopedDevice(self.wp_device):
