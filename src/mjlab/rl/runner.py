@@ -54,7 +54,7 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
         self.logger.ep_extras[:] = merge_episode_extras(self.logger.ep_extras)
         return log(*args, **kwargs)
 
-      self.logger.log = log_merged
+      self.logger.log = log_merged  # type: ignore[method-assign]
 
   def export_policy_to_onnx(
     self, path: str, filename: str = "policy.onnx", verbose: bool = False
