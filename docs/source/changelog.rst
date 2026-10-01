@@ -8,6 +8,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``mjlab.rl.half_precision.HalfPrecisionMLPModel``: an ``MLPModel`` whose layers run
+  in float16 while it trains on CUDA or MPS, with loss scaling inside the model.
+  Weights, losses, checkpoints and exported policies stay float32. Select it with
+  ``--agent.actor.class-name`` and ``--agent.critic.class-name``.
 - ``Mjlab-Velocity-Flat-Robust-Unitree-G1``: the flat G1 velocity task with link
   inertia, PD gain and effort limit randomization and a 0 to 3 step actuator
   command delay.
