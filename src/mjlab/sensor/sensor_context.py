@@ -11,6 +11,8 @@ import mujoco_warp as mjwarp
 import torch
 import warp as wp
 
+from mjlab.utils.device import sim_device
+
 if TYPE_CHECKING:
   from mjlab.sensor.camera_sensor import CameraSensor
   from mjlab.sensor.raycast_sensor import RayCastSensor
@@ -55,7 +57,7 @@ class SensorContext:
   ):
     self._model = model
     self._data = data
-    self.wp_device = wp.get_device(device)
+    self.wp_device = wp.get_device(sim_device(device))
 
     # Sort camera sensors by camera index for consistent ordering.
     self.camera_sensors = sorted(camera_sensors, key=lambda s: s.camera_idx)

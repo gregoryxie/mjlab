@@ -10,6 +10,7 @@ import torch
 import warp as wp
 
 from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
+from mjlab.utils.device import synchronize
 from mjlab.utils.lab_api.math import (
   apply_delta_pose,
   compute_pose_error,
@@ -312,3 +313,4 @@ class DifferentialIKAction(ActionTerm):
         self._point_wp,
         self._body_wp,
       )
+    synchronize(self._env.sim.wp_device)

@@ -5,16 +5,47 @@ Changelog
 Upcoming version (not yet released)
 -----------------------------------
 
+Added
+^^^^^
+
+- ``mjlab.rl.half_precision.HalfPrecisionMLPModel``: an ``MLPModel`` whose layers run
+  in float16 while it trains on CUDA or MPS, with loss scaling inside the model.
+  Weights, losses, checkpoints and exported policies stay float32. Select it with
+  ``--agent.actor.class-name`` and ``--agent.critic.class-name``.
+- ``Mjlab-Velocity-Flat-Robust-Unitree-G1``: the flat G1 velocity task with link
+  inertia, PD gain and effort limit randomization and a 0 to 3 step actuator
+  command delay.
+- ``SimulationCfg.graph_conditional`` sets whether the constraint solver's iteration
+  loop runs as a graph conditional. The default keeps the per-device behavior: on for
+  CUDA, off for Metal, where the loop condition is evaluated on the host.
+- ``SimulationCfg.cpu_sim`` steps the last ``cpu_sim.num_envs`` environments with
+  MuJoCo (C) on CPU threads while MJWarp steps the rest on the GPU, so the CPU adds
+  simulation throughput. Both halves share the MJWarp arrays, so resets, pushes,
+  actions and domain randomization reach every environment. Off by default.
+- ``SimulationCfg.forward_mode="position_velocity"`` makes ``Simulation.forward()``
+  stop after the velocity stage, skipping the constraint solve that is most of its
+  cost. Acceleration-stage sensors (contact, touch, force, torque, accelerometer) keep
+  the values from the last physics step. The default, ``"full"``, is unchanged.
+
 Changed
 ^^^^^^^
 
 - Bumped ``rsl-rl-lib`` from 5.4.2 to 5.5.0. This update removes the ``logger_type``
   attribute of the ``rsl_rl.utils.Logger``, so code that previously checked
   ``logger.logger_type`` must instead check the type of ``logger.writer``.
+- When the agent trains on a different device than the environment (the policy on MPS
+  with the simulation on Metal), logged episode values are merged per key before the
+  logger moves them to the agent's device: one copy per key instead of one per key per
+  environment step. The logged numbers are the same.
 
 Fixed
 ^^^^^
 
+- On Metal, ``Simulation.recompute_constants`` and the differential IK action's
+  Jacobian now wait for the GPU before torch reads their results, which read stale
+  constants and a zero Jacobian before.
+- On Metal, the NaN guard checks a physics step after waiting for the GPU. It read the
+  state while the step was still running before.
 - Capped ``wandb`` below 0.29, which removed the ``start_method`` setting still passed
   by ``rsl-rl-lib`` and crashed training runs launched with ``--logger wandb``.
 - ``distribution="gaussian"`` domain randomization now draws an independent value per

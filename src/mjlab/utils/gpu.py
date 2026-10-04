@@ -67,6 +67,10 @@ def select_gpus(
     import torch.cuda
 
     available_gpus: list[GpuId] = list(range(torch.cuda.device_count()))
+    # A machine without CUDA devices (e.g. a Mac) runs like CPU mode; the simulation
+    # device is then chosen from what Warp offers (see mjlab.utils.device).
+    if not available_gpus:
+      return None, 0
 
   # Map gpu_ids indices to actual GPU IDs.
   selected: list[GpuId]

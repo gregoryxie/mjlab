@@ -164,7 +164,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
-  runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
+  # The agent may learn on a different torch device than the environment produces tensors on
+  # (e.g. MPS on Apple Silicon while the simulation aliases unified memory as CPU tensors).
+  agent_device = os.environ.get("MJLAB_AGENT_DEVICE", device)
+  runner = runner_cls(env, agent_cfg, str(log_dir), agent_device, **runner_kwargs)
 
   add_wandb_tags(cfg.agent.wandb_tags)
   runner.add_git_repo_to_log(__file__)

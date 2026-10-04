@@ -126,3 +126,14 @@ def test_select_gpus_mig_uuids():
   selected, num = select_gpus([0])
   assert selected == ["MIG-GPU-abc-123"]
   assert num == 1
+
+
+def test_select_gpus_without_cuda_devices(monkeypatch):
+  """Falls back to CPU mode when there is no CUDA device at all (e.g. on a Mac)."""
+  import torch.cuda
+
+  os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+  monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+
+  assert select_gpus([0]) == (None, 0)
+  assert select_gpus("all") == (None, 0)
